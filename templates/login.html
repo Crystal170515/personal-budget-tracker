@@ -1,40 +1,14 @@
-{% extends "layout.html" %}
-
+{% extends "base.html" %}
 {% block content %}
-    <div style="display: flex; justify-content: space-around;">
-        
-        <div>
-            <h2>Login</h2>
-            <form action="{{ url_for('login') }}" method="POST">
-                <p>
-                    <label>Username:</label><br>
-                    <input type="text" name="username" required>
-                </p>
-                <p>
-                    <label>Password:</label><br>
-                    <input type="password" name="password" required>
-                </p>
-                <p>
-                    <button type="submit">Login</button>
-                </p>
-            </form>
-        </div>
-
-        <div>
-            <h2>Register</h2>
-            <form action="{{ url_for('register') }}" method="POST">
-                <p>
-                    <label>Username:</label><br>
-                    <input type="text" name="username" required>
-                </p>
-                <p>
-                    <label>Password:</label><br>
-                    <input type="password" name="password" required>
-                </p>
-                <p>
-                    <button type="submit">Register</button>
-                </p>
-            </form>
-        </div>
-    </div>
+<div class="auth-box card">
+  <h2>Login</h2>
+  <form method="post">
+    <label>Username</label>
+    <input type="text" name="username" required>
+    <label>Password</label>
+    <input type="password" name="password" required>
+    <button type="submit">Login</button>
+  </form>
+  <p class="small">No account? <a href="{{ url_for('register') }}">Register</a></p>
+</div>
 {% endblock %}

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title">Add Transaction</h2>
+<form method="post" class="card form-card">
+  <label>Type</label>
+  <select name="type" id="type-select" onchange="toggleCategory()" required>
+    <option value="income">รายรับ</option>
+    <option value="expense">รายจ่าย</option>
+  </select>
+
+  <label>Category</label>
+  <select name="category" id="category-select" required></select>
+
+  <input type="text" id="other-category" name="other_category"
+        placeholder="กรอกหมวดหมู่ของคุณ..." style="display:none;margin-top:0.5rem;">
+
+
+  <input type="text" id="other-category" name="other_category"
+        placeholder="กรอกหมวดหมู่ของคุณ..." style="display:none;margin-top:0.5rem;">
+
+  <label>Amount</label>
+  <input type="number" step="0.01" name="amount" required>
+
+  <label>Description</label>
+  <input type="text" name="description" placeholder="(optional)">
+
+  <label>Date</label>
+  <input type="date" name="date" class="datena">
+
+  <button type="submit">Save</button>
+</form>
+
+<script>
+  const incomeCategories = {{ income_categories|tojson }};
+  const expenseCategories = {{ expense_categories|tojson }};
+
+  function renderCategories(list) {
+    const select = document.getElementById("category-select");
+    select.innerHTML = "";
+    list.forEach(c => {
+      const opt = document.createElement("option");
+      opt.value = c; opt.textContent = c;
+      select.appendChild(opt);
+    });
+    const otherOpt = document.createElement("option");
+    otherOpt.value = "Other";
+    otherOpt.textContent = "อื่นๆ (พิมพ์เอง)";
+    select.appendChild(otherOpt);
+  }
+
+  function toggleCategory() {
+    const type = document.getElementById("type-select").value;
+    renderCategories(type === "income" ? incomeCategories : expenseCategories);
+    const otherInput = document.getElementById("other-category");
+    otherInput.style.display = "none";
+    otherInput.required = false;
+    otherInput.value = "";
+  }
+
+  document.addEventListener("change", (e) => {
+    if (e.target.id === "category-select") {
+      const otherInput = document.getElementById("other-category");
+      if (e.target.value === "Other") {
+        otherInput.style.display = "block";
+        otherInput.required = true;
+        otherInput.focus();
+      } else {
+        otherInput.style.display = "none";
+        otherInput.required = false;
+        otherInput.value = "";
+      }
+    }
+  });
+
+  document.addEventListener("DOMContentLoaded", toggleCategory);
+</script>
+{% endblock %}

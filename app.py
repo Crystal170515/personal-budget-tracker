@@ -26,7 +26,6 @@ def add_column_if_missing(conn, table, col_name, col_sql):
         conn.commit()
 
 def init_db():
-    os.makedirs(os.path.join(BASE_DIR,'data'), exist_ok=True)
     conn = get_db()
     c = conn.cursor()
 
@@ -441,7 +440,4 @@ def goal_deposit(goal_id):
 if __name__ == '__main__':
     os.makedirs(os.path.join(BASE_DIR,'data'), exist_ok=True)
     init_db()
-    if os.environ.get('RENDER'):
-        init_db()
-    else:
-        app.run(debug=True, host='0.0.0.0')
+    app.run(debug=True, host='0.0.0.0')

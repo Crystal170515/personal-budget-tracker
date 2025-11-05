@@ -48,6 +48,7 @@
 
       {# ----- Amount column ----- #}
       <td>
+        {# แสดงยอดเป็น THB เสมอ (ถ้ามีการแปลง) #}
         {% set thb = t['amount_thb'] if t['amount_thb'] is not none else t['amount'] %}
         {% if t['type'] == 'income' %}
           +{{ "{:,.2f}".format(thb) }}
@@ -56,6 +57,7 @@
         {% endif %}
         <span> THB</span>
 
+        {# ถ้าสกุลเงินต้นทางไม่ใช่ THB โชว์บรรทัดอธิบายเพิ่ม #}
         {% if t['currency'] and t['currency'] != 'THB' %}
           <br>
           <small>( {{ "{:,.2f}".format(t['amount']) }} {{ t['currency'] }} → {{ "{:,.2f}".format(t['amount_thb']) }} THB )</small>

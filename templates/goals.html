@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title">Saving Goals</h2>
+
+<form method="post" class="card form-card mb">
+  <h3>Create new goal</h3>
+  <label>Name</label>
+  <input type="text" name="name" required>
+  <label>Target amount</label>
+  <input type="number" step="0.01" name="target_amount" required>
+  <label>Deadline</label>
+  <input type="date" name="deadline">
+  <button type="submit">Create</button>
+</form>
+
+<div class="grid-2">
+  {% for g in goals %}
+    {% set progress = (g['current_amount'] / g['target_amount'] * 100) if g['target_amount'] else 0 %}
+    <div class="card">
+      <h3>{{ g['name'] }}</h3>
+      <p>Saved: {{ "%.2f"|format(g['current_amount']) }} / {{ "%.2f"|format(g['target_amount']) }}</p>
+      <div class="progress-bar">
+        <div class="progress-fill" style="width: {{ progress if progress<=100 else 100 }}%"></div>
+      </div>
+      <p>{{ "%.1f"|format(progress) }}% complete</p>
+      {% if g['deadline'] %}
+        <p>Deadline: {{ g['deadline'] }}</p>
+      {% endif %}
+      <form method="post" action="{{ url_for('goal_deposit', goal_id=g['id']) }}" class="form-inline mt">
+        <input type="number" step="0.01" name="amount" placeholder="Add amount" required>
+        <button type="submit">Add</button>
+      </form>
+    </div>
+  {% endfor %}
+</div>
+{% endblock %}

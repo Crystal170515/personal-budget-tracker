@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title">Category Ratio</h2>
+
+<div class="grid-2">
+  <div class="card">
+    <h3>Income</h3>
+    {% if income_ratios %}
+      <ul class="ratio-list">
+      {% for c, p in income_ratios %}
+        <li><span>{{ c }}</span><span>{{ "%.1f"|format(p) }}%</span></li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p>No income data.</p>
+    {% endif %}
+  </div>
+  <div class="card">
+    <h3>Expense</h3>
+    {% if expense_ratios %}
+      <ul class="ratio-list">
+      {% for c, p in expense_ratios %}
+        <li><span>{{ c }}</span><span>{{ "%.1f"|format(p) }}%</span></li>
+      {% endfor %}
+      </ul>
+    {% else %}
+      <p>No expense data.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

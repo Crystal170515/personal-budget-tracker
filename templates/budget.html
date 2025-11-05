@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<h2 class="page-title">Budget</h2>
+
+<div class="card mb">
+  <p>Expense this month: <strong>{{ "%.2f"|format(month_expense) }}</strong></p>
+  {% if budget %}
+    <p>Your budget: <strong>{{ "%.2f"|format(budget) }}</strong></p>
+  {% endif %}
+</div>
+
+<form method="post" class="card form-card">
+  <label>Set budget (per month)</label>
+  <input type="number" step="0.01" name="amount" value="{{ budget if budget else '' }}" required>
+  <button type="submit">Save</button>
+</form>
+{% endblock %}

@@ -1,296 +1,447 @@
-import csv
-import os
-from datetime import datetime, timedelta
-from functools import wraps
-from flask import Flask, render_template, request, redirect, url_for, session, flash
+from flask import Flask, render_template, request, redirect, url_for, session, flash, Response
+import os, sqlite3
+from datetime import datetime, date
+from werkzeug.security import generate_password_hash, check_password_hash
 
-# --- ตั้งค่า Flask App ---
 app = Flask(__name__)
-# 🚨 สำคัญมาก: เปลี่ยน 'your_very_secret_key' เป็นคีย์ลับของคุณเอง!
-# ใช้สำหรับเข้ารหัส session ของผู้ใช้
-app.config['SECRET_KEY'] = 'Test-project-PSCP101'
+app.secret_key = 'change_this_to_something_secret'
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'data', 'tracker.db')
+print("📁 Using database:", DB_PATH)
+
+EXPENSE_CATEGORIES = ['Bill','Food and Drink','Transport','Shopping','Investment','Utility','Education']
+INCOME_CATEGORIES = ['Salary','Gift','Passive Income','Refund']
+
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def add_column_if_missing(conn, table, col_name, col_sql):
+    cur = conn.cursor()
+    cols = [r[1] for r in cur.execute(f"PRAGMA table_info({table})").fetchall()]
+    if col_name not in cols:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_sql}")
+        conn.commit()
+
+def init_db():
+    os.makedirs(os.path.join(BASE_DIR,'data'), exist_ok=True)
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute('''CREATE TABLE IF NOT EXISTS users(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS transactions(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        date TEXT NOT NULL,
+        type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        amount REAL NOT NULL,
+        description TEXT
+        -- อย่าระบุคอลัมน์ใหม่ตรงนี้ซ้ำ เดี๋ยวเราเติมด้วย ALTER TABLE ด้านล่าง
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS budgets(
+        user_id INTEGER PRIMARY KEY,
+        amount REAL NOT NULL DEFAULT 0
+    )''')
+
+    c.execute('''CREATE TABLE IF NOT EXISTS goals(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        target_amount REAL NOT NULL,
+        current_amount REAL NOT NULL DEFAULT 0,
+        deadline TEXT
+    )''')
+
+    add_column_if_missing(conn, "transactions", "currency", "TEXT DEFAULT 'THB'")
+    add_column_if_missing(conn, "transactions", "amount_thb", "REAL DEFAULT 0")
+
+    conn.commit()
+    conn.close()
 
 
-# --- ค่าคงที่และหมวดหมู่ (เหมือนเดิม) ---
-USERS_FILE = "users.csv"
-DATA_FILE = "transactions.csv"
+@app.before_request
+def before_request():
+    init_db()
 
-EXPENSE_CATEGORIES = ["Bill", "Food and Drink",
-                      "Transport", "Shopping", "Investment", "Utility", "Education"]
-INCOME_CATEGORIES = ["Salary", "Gift", "Passive Income", "Refund"]
-
-
-# --- ฟังก์ชันจัดการ User (เหมือนเดิม) ---
-def load_users():
-    """โหลดข้อมูลผู้ใช้ทั้งหมดจากไฟล์ users.csv และเก็บเป็น dict {username: password}"""
-    users = {}
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) == 2:
-                    users[row[0]] = row[1]
-    return users
-
-
-def save_user(username, password):
-    """บันทึกชื่อผู้ใช้และรหัสผ่านใหม่ลงไฟล์ users.csv"""
-    # ⚠️ หมายเหตุ: ในแอปจริง ควร "hash" รหัสผ่านก่อนบันทึก
-    # แต่สำหรับโปรเจกต์นี้ เราจะบันทึกแบบข้อความธรรมดาตามโค้ดเดิม
-    with open(USERS_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([username, password])
-
-
-# --- ฟังก์ชัน Refactored สำหรับดึงข้อมูล (ปรับจากโค้ดเดิม) ---
-# เราจะปรับฟังก์ชันที่เคย print() ให้ return ข้อมูลออกมาเป็น List/Dict แทน
-
-def get_transactions(username):
-    """ดึงธุรกรรมทั้งหมดของผู้ใช้ และคำนวณยอดคงเหลือ"""
-    transactions = []
-    balance = 0
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) == 6 and row[0] == username:
-                    date_str, t_type, category, amount_str, desc = row[1], row[2], row[3], row[4], row[5]
-                    amount = float(amount_str)
-                    
-                    if t_type == "income":
-                        balance += amount
-                    elif t_type == "expense":
-                        balance -= amount
-                    
-                    transactions.append({
-                        "date": datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d"),
-                        "type": t_type,
-                        "category": category,
-                        "amount": amount,
-                        "description": desc,
-                        "sign": "+" if t_type == "income" else "-"
-                    })
-    # เรียงลำดับธุรกรรมจากใหม่ไปเก่า
-    return sorted(transactions, key=lambda x: x['date'], reverse=True), balance
-
-
-def save_transaction(username, t_type, category, amount, description):
-    """บันทึกธุรกรรมใหม่ (ย้ายมาจาก add_transaction)"""
-    with open(DATA_FILE, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([username, datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                         t_type, category, amount, description])
-
-
-def get_weekly_average(username):
-    """คำนวณค่าเฉลี่ยรายรับ/จ่ายต่อสัปดาห์ (ย้อนหลัง 30 วัน)"""
-    now = datetime.now()
-    last_month = now - timedelta(days=30)
-    income_total, expense_total = 0, 0
-
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) == 6 and row[0] == username:
-                    date = datetime.strptime(row[1], "%Y-%m-%d %H:%M:%S")
-                    if date >= last_month:
-                        amount = float(row[4])
-                        if row[2] == "income":
-                            income_total += amount
-                        elif row[2] == "expense":
-                            expense_total += amount
-    
-    # 30 วัน / 7 วันต่อสัปดาห์ ≈ 4.28 สัปดาห์
-    # เราใช้ 4 เพื่อความง่ายตามโค้ดเดิม
-    return income_total / 4, expense_total / 4
-
-
-def get_budget_report(username, budget):
-    """คำนวณยอดรวมรายจ่ายเทียบกับงบประมาณ"""
-    total_expense = 0
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) == 6 and row[0] == username and row[2] == "expense":
-                    total_expense += float(row[4])
-    
-    is_over_budget = total_expense > budget
-    return total_expense, is_over_budget
-
-
-def get_category_ratios(username):
-    """คำนวณสัดส่วนรายรับ/รายจ่ายตามหมวดหมู่"""
-    totals = {}
-    overall_income, overall_expense = 0, 0
-
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, newline="", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if len(row) == 6 and row[0] == username:
-                    t_type, category, amount = row[2], row[3], float(row[4])
-                    totals[category] = totals.get(category, 0) + amount
-                    if t_type == "income":
-                        overall_income += amount
-                    elif t_type == "expense":
-                        overall_expense += amount
-    
-    income_ratios = []
-    expense_ratios = []
-    
-    for category, total in totals.items():
-        if category in INCOME_CATEGORIES and overall_income > 0:
-            percent = (total / overall_income) * 100
-            income_ratios.append({"category": category, "percent": percent})
-        elif category in EXPENSE_CATEGORIES and overall_expense > 0:
-            percent = (total / overall_expense) * 100
-            expense_ratios.append({"category": category, "percent": percent})
-            
-    return income_ratios, expense_ratios
-
-
-# --- Decorator สำหรับตรวจสอบการล็อกอิน ---
-def login_required(f):
-    """สร้าง Decorator เพื่อตรวจสอบว่าผู้ใช้ล็อกอินหรือยัง"""
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if 'username' not in session:
-            flash("Please log in to access this page.", "danger")
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
-
-
-# --- Routes (เส้นทางเว็บ) ---
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    """หน้าสำหรับล็อกอิน"""
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        
-        users = load_users()
-        if username in users and users[username] == password:
-            session['username'] = username  # บันทึกการล็อกอินใน session
-            flash(f"Welcome back, {username}!", "success")
-            return redirect(url_for('index'))
-        else:
-            flash("Invalid username or password.", "danger")
-            
-    return render_template('login.html')
-
-
-@app.route('/register', methods=['POST'])
-def register():
-    """ฟังก์ชันสำหรับสมัครสมาชิก (รับค่าจากฟอร์มในหน้า /login)"""
-    username = request.form['username']
-    password = request.form['password']
-    
-    users = load_users()
-    if username in users:
-        flash("Username already exists.", "warning")
-    elif not username or not password:
-         flash("Username and password are required.", "warning")
-    else:
-        save_user(username, password)
-        flash("User registered successfully. Please log in.", "success")
-        
-    return redirect(url_for('login'))
-
-
-@app.route('/logout')
-@login_required
-def logout():
-    """ออกจากระบบ"""
-    session.pop('username', None) # เคลียร์ session
-    flash("You have been logged out.", "info")
-    return redirect(url_for('login'))
-
+def current_user():
+    if 'user_id' in session:
+        return {'id': session['user_id'], 'username': session.get('username')}
+    return None
 
 @app.route('/')
-@login_required
 def index():
-    """หน้าหลัก (แดชบอร์ด) แสดงธุรกรรม"""
-    username = session['username']
-    transactions, balance = get_transactions(username)
-    return render_template('index.html', 
-                           transactions=transactions, 
-                           balance=balance)
+    if current_user():
+        return redirect(url_for('dashboard'))
+    return redirect(url_for('login'))
 
-
-@app.route('/add', methods=['GET', 'POST'])
-@login_required
-def add():
-    """หน้าเพิ่มธุรกรรม"""
+@app.route('/register', methods=['GET','POST'])
+def register():
     if request.method == 'POST':
-        username = session['username']
+        username = request.form['username'].strip()
+        password = request.form['password'].strip()
+        if not username or not password:
+            flash('Username and password required','danger')
+            return render_template('register.html')
+        conn = get_db()
+        c = conn.cursor()
+        try:
+            c.execute('INSERT INTO users (username,password_hash) VALUES (?,?)',
+                      (username, generate_password_hash(password)))
+            conn.commit()
+            flash('Registered successfully ✅','success')
+            return redirect(url_for('login'))
+        except sqlite3.IntegrityError:
+            flash('Username already exists ❌','danger')
+        finally:
+            conn.close()
+    return render_template('register.html')
+
+@app.route('/login', methods=['GET','POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username'].strip()
+        password = request.form['password'].strip()
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('SELECT * FROM users WHERE username=?',(username,))
+        user = c.fetchone()
+        conn.close()
+        if user and check_password_hash(user['password_hash'], password):
+            session['user_id'] = user['id']
+            session['username'] = user['username']
+            flash('Login successful ✅','success')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Invalid username or password ❌','danger')
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Logged out 👋','info')
+    return redirect(url_for('login'))
+
+@app.route('/dashboard')
+def dashboard():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT
+            SUM(CASE WHEN type='income' THEN amount_thb ELSE 0 END) AS inc,
+            SUM(CASE WHEN type='expense' THEN amount_thb ELSE 0 END) AS exp
+        FROM transactions WHERE user_id=?
+    """, (user['id'],))
+    row = c.fetchone()
+    inc = row['inc'] or 0
+    exp = row['exp'] or 0
+    balance = inc - exp
+
+    c.execute('SELECT amount FROM budgets WHERE user_id=?',(user['id'],))
+    b = c.fetchone()
+    budget_amount = b['amount'] if b else None
+
+    month_start = date.today().replace(day=1)
+    if month_start.month == 12:
+        next_month_start = date(month_start.year + 1, 1, 1)
+    else:
+        next_month_start = date(month_start.year, month_start.month + 1, 1)
+    start_str = month_start.strftime('%Y-%m-%d') + ' 00:00:00'
+    end_str   = next_month_start.strftime('%Y-%m-%d') + ' 00:00:00'
+
+    c.execute("""
+        SELECT COALESCE(SUM(amount_thb), 0) AS mexp
+        FROM transactions
+        WHERE user_id=? AND type='expense' AND date >= ? AND date < ?
+    """, (user['id'], start_str, end_str))
+    mexp = c.fetchone()['mexp'] or 0
+
+    warn_over = bool(budget_amount and mexp >= 0.8*budget_amount)
+
+    c.execute("""
+        SELECT date,
+               SUM(CASE WHEN type='income' THEN amount_thb ELSE 0 END) AS inc,
+               SUM(CASE WHEN type='expense' THEN amount_thb ELSE 0 END) AS exp
+        FROM transactions
+        WHERE user_id=?
+        GROUP BY substr(date,1,10)
+        ORDER BY date DESC
+        LIMIT 7
+    """, (user['id'],))
+    rows = c.fetchall()
+
+    c.execute('SELECT id, name, target_amount, current_amount FROM goals WHERE user_id=? ORDER BY id DESC',
+              (user['id'],))
+    grows = c.fetchall()
+    conn.close()
+
+    labels = []; inc_data=[]; exp_data=[]
+    for r in reversed(rows):
+        labels.append(r['date'][:10])
+        inc_data.append(r['inc'] or 0)
+        exp_data.append(r['exp'] or 0)
+
+    goals = []
+    for g in grows:
+        target = g['target_amount'] or 0
+        current = g['current_amount'] or 0
+        percent = 0 if target <= 0 else min(100.0, (current / target) * 100.0)
+        goals.append({
+            'id': g['id'],
+            'name': g['name'],
+            'target': float(target),
+            'current': float(current),
+            'percent': float(percent)
+        })
+
+    return render_template('dashboard.html',
+                           username=user['username'],
+                           balance=balance,
+                           total_income=inc,
+                           total_expense=exp,
+                           budget_amount=budget_amount,
+                           month_expense=mexp,
+                           warn_over=warn_over,
+                           labels=labels,
+                           income_data=inc_data,
+                           expense_data=exp_data,
+                           goals=goals)   # << ส่งไป template
+
+
+
+@app.route('/add', methods=['GET','POST'])
+def add_transaction():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    if request.method == 'POST':
+        category = request.form.get('category', '').strip()
+        if not category:
+            flash('Please choose a category', 'danger')
+            return redirect(url_for('add_transaction'))
+
+        if category == 'Other':
+            typed = request.form.get('other_category', '').strip()
+            if not typed:
+                flash('Please type your category name', 'danger')
+                return redirect(url_for('add_transaction'))
+            category = typed
+
         t_type = request.form['type']
-        category = request.form['category']
-        description = request.form['description']
-        
-        # ตรวจสอบค่า
+        desc = request.form.get('description', '')
+        date_str = request.form.get('date') or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        currency = request.form.get('currency', 'THB')
+
         try:
             amount = float(request.form['amount'])
-            if amount <= 0:
-                raise ValueError
         except ValueError:
-            flash("Amount must be a positive number.", "danger")
-            return redirect(url_for('add'))
-        
-        # ตรวจสอบหมวดหมู่
-        if (t_type == 'income' and category not in INCOME_CATEGORIES) or \
-           (t_type == 'expense' and category not in EXPENSE_CATEGORIES):
-            flash("Invalid category selected.", "danger")
-            return redirect(url_for('add'))
+            flash('Amount must be a number', 'danger')
+            return redirect(url_for('add_transaction'))
 
-        # บันทึกข้อมูล
-        save_transaction(username, t_type, category, amount, description)
-        flash("Transaction added successfully.", "success")
-        return redirect(url_for('index'))
+        amount_thb = amount
+        if currency != 'THB':
+            try:
+                res = requests.get(f'https://v6.exchangerate-api.com/v6/{api_key}/latest/{currency}').json()
+                if res.get('result') == 'success':
+                    rate = res['conversion_rates']['THB']
+                    amount_thb = amount * rate
+                    flash(f'Converted {amount} {currency} ≈ {amount_thb:.2f} THB (Rate {rate:.4f})', 'info')
+                else:
+                    flash('Error fetching conversion rate', 'warning')
+            except Exception as e:
+                flash(f'Currency conversion failed: {e}', 'danger')
 
-    # (GET Request) แสดงฟอร์ม
-    return render_template('add.html', 
-                           income_categories=INCOME_CATEGORIES, 
+        conn = get_db()
+        c = conn.cursor()
+        c.execute('''
+            INSERT INTO transactions (user_id, date, type, category, amount, description, currency, amount_thb)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (user['id'], date_str, t_type, category, amount, desc, currency, amount_thb))
+        conn.commit()
+        conn.close()
+
+        flash('Transaction added successfully ✅', 'success')
+        return redirect(url_for('view_transactions'))
+
+    return render_template('add_transaction.html',
+                           income_categories=INCOME_CATEGORIES,
                            expense_categories=EXPENSE_CATEGORIES)
 
 
-@app.route('/reports', methods=['GET', 'POST'])
-@login_required
-def reports():
-    """หน้ารายงานสรุปผล"""
-    username = session['username']
-    
-    # 1. คำนวณค่าเฉลี่ยรายสัปดาห์
-    avg_income, avg_expense = get_weekly_average(username)
-    
-    # 2. คำนวณสัดส่วนหมวดหมู่
-    income_ratios, expense_ratios = get_category_ratios(username)
-    
-    # 3. จัดการเรื่องงบประมาณ (Budget)
-    budget_data = None
+
+@app.route('/transactions')
+def view_transactions():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+    month = request.args.get('month')
+    cat = request.args.get('category')
+    conn = get_db(); c = conn.cursor()
+    q = 'SELECT * FROM transactions WHERE user_id=?'
+    params = [user['id']]
+    if month:
+        q += ' AND date LIKE ?'; params.append(month+'%')
+    if cat and cat != 'all':
+        q += ' AND category=?'; params.append(cat)
+    q += ' ORDER BY date DESC'
+    c.execute(q, params); rows = c.fetchall()
+    c.execute("""
+    SELECT
+      SUM(CASE WHEN type='income' THEN amount_thb ELSE 0 END) AS inc,
+      SUM(CASE WHEN type='expense' THEN amount_thb ELSE 0 END) AS exp
+    FROM transactions WHERE user_id=?
+""", (user['id'],))
+
+    r = c.fetchone()
+    balance = (r['inc'] or 0) - (r['exp'] or 0)
+    conn.close()
+    return render_template('view_transactions.html',
+                           transactions=rows,
+                           balance=balance,
+                           month=month,
+                           category=cat,
+                           expense_categories=EXPENSE_CATEGORIES,
+                           income_categories=INCOME_CATEGORIES)
+
+@app.route('/budget', methods=['GET','POST'])
+def budget():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+    conn = get_db(); c = conn.cursor()
     if request.method == 'POST':
+        amount = request.form['amount']
         try:
-            budget_input = float(request.form['budget'])
-            total_expense, is_over = get_budget_report(username, budget_input)
-            budget_data = {
-                "budget": budget_input,
-                "total_expense": total_expense,
-                "is_over": is_over
-            }
-        except ValueError:
-            flash("Budget must be a number.", "danger")
+            amount = float(amount)
+        except:
+            flash('Budget must be number','danger'); return redirect(url_for('budget'))
+        c.execute("INSERT INTO budgets (user_id,amount) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET amount=excluded.amount",
+                  (user['id'], amount))
+        conn.commit(); flash('Budget saved ✅','success')
+    c.execute('SELECT amount FROM budgets WHERE user_id=?',(user['id'],))
+    b = c.fetchone(); budget_amount = b['amount'] if b else None
+    today = date.today().strftime('%Y-%m')
+    c.execute("SELECT SUM(amount) AS mexp FROM transactions WHERE user_id=? AND type='expense' AND date LIKE ?",
+              (user['id'], today+'%'))
+    mexp = c.fetchone()['mexp'] or 0
+    conn.close()
+    return render_template('budget.html', budget=budget_amount, month_expense=mexp)
 
-    return render_template('reports.html',
-                           avg_income=avg_income,
-                           avg_expense=avg_expense,
-                           income_ratios=income_ratios,
-                           expense_ratios=expense_ratios,
-                           budget_data=budget_data)
+@app.route('/category-ratio')
+def category_ratio():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+    conn = get_db(); c = conn.cursor()
+    c.execute("""SELECT category,type,SUM(amount) AS total
+                 FROM transactions WHERE user_id=? GROUP BY category,type""", (user['id'],))
+    rows = c.fetchall(); conn.close()
+    inc_rat=[]; exp_rat=[]
+    tot_inc = sum(r['total'] for r in rows if r['type']=='income')
+    tot_exp = sum(r['total'] for r in rows if r['type']=='expense')
+    for r in rows:
+        if r['type']=='income' and tot_inc>0:
+            inc_rat.append((r['category'], r['total']/tot_inc*100))
+        elif r['type']=='expense' and tot_exp>0:
+            exp_rat.append((r['category'], r['total']/tot_exp*100))
+    return render_template('category_ratio.html',
+                           income_ratios=inc_rat,
+                           expense_ratios=exp_rat)
+
+@app.route('/goals', methods=['GET','POST'])
+def goals():
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+    conn = get_db(); c = conn.cursor()
+    if request.method == 'POST':
+        name = request.form['name']
+        target = request.form['target_amount']
+        deadline = request.form.get('deadline')
+        try: target = float(target)
+        except: flash('Target must be number','danger'); return redirect(url_for('goals'))
+        c.execute('INSERT INTO goals (user_id,name,target_amount,deadline,current_amount) VALUES (?,?,?,?,0)',
+                  (user['id'], name, target, deadline))
+        conn.commit(); flash('Goal created ✅','success')
+    c.execute('SELECT * FROM goals WHERE user_id=? ORDER BY id DESC',(user['id'],))
+    gs = c.fetchall(); conn.close()
+    return render_template('goals.html', goals=gs)
+
+@app.route('/goals/deposit/<int:goal_id>', methods=['POST'])
+def goal_deposit(goal_id):
+    user = current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    amt = request.form['amount']
+    try:
+        amt = float(amt)
+        if amt <= 0:
+            raise ValueError()
+    except:
+        flash('Amount must be a positive number', 'danger')
+        return redirect(url_for('goals'))
+
+    conn = get_db()
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT
+            SUM(CASE WHEN type='income' THEN amount_thb ELSE 0 END) AS inc,
+            SUM(CASE WHEN type='expense' THEN amount_thb ELSE 0 END) AS exp
+        FROM transactions WHERE user_id=?
+    """, (user['id'],))
+    row = c.fetchone()
+    balance = (row['inc'] or 0) - (row['exp'] or 0)
+
+    if amt > balance:
+        conn.close()
+        flash(f'❌ Not enough balance! You only have {balance:,.2f} THB available.', 'danger')
+        return redirect(url_for('goals'))
 
 
-# --- สั่งให้แอปทำงาน ---
-if __name__ == "__main__":
-    app.run(debug=True) # debug=True ช่วยให้เราเห็นข้อผิดพลาดตอนพัฒนา
+    c.execute('SELECT id, name, target_amount, current_amount FROM goals WHERE id=? AND user_id=?',
+              (goal_id, user['id']))
+    g = c.fetchone()
+    if not g:
+        conn.close()
+        flash('Goal not found', 'danger')
+        return redirect(url_for('goals'))
+
+    c.execute('UPDATE goals SET current_amount = current_amount + ? WHERE id=? AND user_id=?',
+              (amt, goal_id, user['id']))
+
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    c.execute("""
+        INSERT INTO transactions (user_id, date, type, category, amount, description, currency, amount_thb)
+        VALUES (?, ?, 'expense', ?, ?, 'Transfer to Goal', 'THB', ?)
+    """, (user['id'], now_str, f"Goal: {g['name']}", amt, amt))
+
+    conn.commit()
+    conn.close()
+
+    flash('Goal updated and money transferred ✅', 'success')
+    return redirect(url_for('goals'))
+
+
+if __name__ == '__main__':
+    os.makedirs(os.path.join(BASE_DIR,'data'), exist_ok=True)
+    init_db()
+    if os.environ.get('RENDER'):
+        init_db()
+    else:
+        app.run(debug=True, host='0.0.0.0')
